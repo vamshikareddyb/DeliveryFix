@@ -24,8 +24,8 @@ class Scenario:
     order_id: str
     edd_days_from_now: float  # negative = already past
     scans: list[Scan]  # oldest first
-    expected_issue: str | None  # None = no exception
-    expected_action: str | None
+    expected_issue: str
+    expected_action: str
     description: str = ""
     order: dict = field(default_factory=dict)
 
@@ -58,8 +58,8 @@ SCENARIOS: list[Scenario] = [
         awb="DL1000000001", carrier="delhivery", order_id="ORD-0001",
         edd_days_from_now=2,
         scans=[Scan("Picked Up", "Gurgaon Hub", 30), Scan("In Transit", "Nagpur Hub", 6)],
-        expected_issue=None, expected_action=None,
-        description="Healthy, moving normally.",
+        expected_issue="no_issue", expected_action="close_resolved",
+        description="Healthy, moving normally (false alarm).",
         order=_order("ORD-0001", "DL1000000001", "delhivery", "Ananya", "whatsapp", "9876543210", HYD,
                      [dict(sku="SH-RUN-01", name="Running shoes", qty=1, unit_price=3499)]),
     ),
@@ -126,7 +126,7 @@ SCENARIOS: list[Scenario] = [
         awb="DL1000000007", carrier="delhivery", order_id="ORD-0007",
         edd_days_from_now=-1,
         scans=[Scan("Picked Up", "Gurgaon Hub", 70), Scan("Dispatched", "Hyderabad", 30), Scan("Delivered", "Hyderabad", 26)],
-        expected_issue=None, expected_action="close_resolved",
+        expected_issue="no_issue", expected_action="close_resolved",
         description="Delivered. A stale case for this shipment should close.",
         order=_order("ORD-0007", "DL1000000007", "delhivery", "Sneha", "whatsapp", "9855566677", HYD,
                      [dict(sku="BT-01", name="Water bottle", qty=2, unit_price=499)]),

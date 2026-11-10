@@ -20,5 +20,11 @@ class Settings:
     min_diagnosis_confidence: float = 0.7  # below this the graph escalates
     max_investigation_steps: int = 6
 
+    # Graph behaviour
+    max_rechecks: int = 3  # after this many rechecks without resolution, escalate
+    delay_recheck_hours: int = 24
+    inquiry_recheck_hours: int = 72
+    delay_eta_buffer_days: int = 2  # policy: add 2 days to EDD for surface shipments
+
 
 SETTINGS = Settings()

@@ -38,7 +38,7 @@ for sc in SCENARIOS:
         d = diagnose(llm, report, sc.awb, sc.carrier, sc.order_id, trigger)
         tracking = ctx.carriers[sc.carrier].get_tracking(sc.awb)
         d2, overrides = apply_guardrails(d, ctx.orders.get(sc.order_id), tracking, ctx.cases.get(sc.awb))
-        ok = (d2.issue_type == sc.expected_issue) if sc.expected_issue else True
+        ok = d2.issue_type == sc.expected_issue
         hits[sc.awb] = ok
         print(f"  LLM: {d.issue_type} ({d.confidence:.2f}) -> {d.recommended_action}")
         if overrides:

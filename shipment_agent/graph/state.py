@@ -1,38 +1,53 @@
-"""Graph state for one shipment case (one LangGraph thread per shipment)."""
+"""Graph state for one shipment case (one LangGraph thread per shipment).
+
+Fields are JSON-friendly (dicts, not Pydantic objects) so any checkpointer
+can persist them. `actions` and `log` are append-only via the add reducer.
+"""
 from __future__ import annotations
 
 import operator
-from typing import Annotated, Literal, TypedDict
+from typing import Annotated, Literal, Optional, TypedDict
 
 CaseStatus = Literal[
-    "open",
-    "monitoring",          # delay notice sent; recheck later (loop added in Phase 3)
-    "awaiting_customer",   # asked for a new slot or address
-    "awaiting_carrier",    # trace request raised for a suspected loss
-    "awaiting_approval",   # refund / reship proposal waiting for a human
-    "escalated",
+    "open",               # being worked on in this run
+    "monitoring",         # waiting for the next recheck (delay notice sent / inquiry raised)
+    "waiting_customer",   # asked the customer something; Phase 3 resumes on reply
+    "awaiting_approval",  # refund/reship proposed; Phase 3 resumes on approval
+    "escalated",          # handed to a human
     "closed",
 ]
 
 
 class CaseState(TypedDict, total=False):
-    # Input (set by the detector when it starts the case)
-    awb: str
+    # Identity (set on first run, stays fixed)
+    shipment_id: str
     carrier: str
     order_id: str
+
+    # Why this run started: "stale scan 60h", "delivery failed", "recheck", ...
     trigger: str
 
-    # Context loaded deterministically, so guardrails never depend on the LLM's tool use
-    tracking: dict
-    order: dict
-
-    # LLM outputs
+    # Investigation output
     findings: str
     tool_calls: list[dict]
-    diagnosis: dict
-    overrides: list[str]
+    tracking: dict  # TrackingResult snapshot used by guardrails
+    order: dict     # OrderDetails snapshot
 
-    # Results
-    proposal: dict  # refund / reship awaiting approval
-    actions: Annotated[list[str], operator.add]  # appended to by every action node
+    # Diagnosis output
+    diagnosis: dict
+    llm_diagnosis: dict          # before guardrails, kept for evaluation
+    guardrail_overrides: list[str]
+
+    # Resolution
+    proposal: Optional[dict]     # refund / reship awaiting approval
     status: CaseStatus
+    recheck_count: int
+    next_check_at: Optional[str]  # ISO time; the Phase 4 scheduler reads this
+
+    # Append-only history
+    actions: Annotated[list[dict], operator.add]
+    log: Annotated[list[str], operator.add]
+
+
+# Keys whose updates append instead of overwrite (used by the local simulator too).
+APPEND_KEYS = {"actions", "log"}

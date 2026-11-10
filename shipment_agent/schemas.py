@@ -131,7 +131,7 @@ class ActionResult(BaseModel):
 # --------------------------------------------------------------------------
 # LLM structured outputs
 # --------------------------------------------------------------------------
-IssueType = Literal["delayed", "failed_attempt", "wrong_address", "lost", "damaged", "unclear"]
+IssueType = Literal["delayed", "failed_attempt", "wrong_address", "lost", "damaged", "unclear", "no_issue"]
 RecommendedAction = Literal[
     "notify_delay",
     "ask_reschedule",

@@ -28,6 +28,7 @@ Issue types:
 - lost: no scan for 7+ days with no explanation.
 - damaged: carrier reported damage.
 - unclear: the facts conflict, the status is unrecognised, or you cannot tell. Prefer this to guessing.
+- no_issue: delivered, or moving normally within its expected date. Use with close_resolved.
 
 Recommended actions: notify_delay, ask_reschedule, ask_address, carrier_inquiry (suspected loss: always first),
 propose_refund, propose_reship (damage default), escalate, close_resolved (already delivered / fixed).
