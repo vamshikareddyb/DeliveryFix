@@ -141,6 +141,7 @@ RecommendedAction = Literal[
     "propose_reship",
     "escalate",
     "close_resolved",
+    "monitor",  # set by the graph, not the LLM: a fix is already in motion, just recheck later
 ]
 
 

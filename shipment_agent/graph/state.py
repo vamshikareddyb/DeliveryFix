@@ -45,6 +45,7 @@ class CaseState(TypedDict, total=False):
     reminders_sent: int
     customer_event: Optional[dict]   # {"type": "reply", "text": ...} or {"type": "timeout"}
     parsed_reply: Optional[dict]     # CustomerReplyParse
+    no_reply_attempt: Optional[int]  # delivery attempt the customer never answered about
 
     # Waiting on staff (Phase 3)
     approval: Optional[dict]         # {"approved", "approver", "role", "note"}

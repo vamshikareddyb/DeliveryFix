@@ -37,9 +37,17 @@ class MockCarrierAdapter:
         self._rng = random.Random(seed)
         self.calls: list[tuple[str, dict]] = []  # action log for tests
         self._reattempts: dict[str, int] = {}
+        self.extra_scans: dict[str, list[TrackingEvent]] = {}  # scans that "happen" after the scenario starts
+        self.fail_next = 0  # deterministic flakiness: fail the next N calls
+        # Scenario scans are "N hours before the adapter was created", fixed from then on,
+        # so time passing makes them older (as with a real carrier) instead of moving with the clock.
+        self.anchor = clock.now()
 
     # ---------------- helpers ----------------
     def _maybe_fail(self):
+        if self.fail_next > 0:
+            self.fail_next -= 1
+            raise CarrierAPIError(f"{self.name}: simulated timeout")
         if self.failure_rate and self._rng.random() < self.failure_rate:
             raise CarrierAPIError(f"{self.name}: simulated 503 Service Unavailable")
 
@@ -50,7 +58,7 @@ class MockCarrierAdapter:
         return sc
 
     def _events(self, sc: Scenario) -> list[TrackingEvent]:
-        now = clock.now()
+        now = self.anchor
         events = [
             TrackingEvent(
                 raw_status=s.raw_status,
@@ -60,8 +68,16 @@ class MockCarrierAdapter:
                 event_time=now - timedelta(hours=s.hours_ago),
             )
             for s in sc.scans
-        ]
+        ] + self.extra_scans.get(sc.awb, [])
         return sorted(events, key=lambda e: e.event_time, reverse=True)
+
+    def add_scan(self, awb: str, raw_status: str, location: str, remarks: str | None = None) -> TrackingEvent:
+        """Simulate a new scan arriving now. Returns the event (feed it to the webhook handler)."""
+        self._scenario(awb)
+        ev = TrackingEvent(raw_status=raw_status, normalized_status=normalize(self.name, raw_status),
+                           location=location, remarks=remarks, event_time=clock.now())
+        self.extra_scans.setdefault(awb, []).append(ev)
+        return ev
 
     # ---------------- read ----------------
     def get_tracking(self, awb: str, refresh: bool = False) -> TrackingResult:
@@ -70,7 +86,7 @@ class MockCarrierAdapter:
         events = self._events(sc)
         latest = events[0]
         now = clock.now()
-        edd = now + timedelta(days=sc.edd_days_from_now)
+        edd = self.anchor + timedelta(days=sc.edd_days_from_now)
         return TrackingResult(
             awb=awb,
             carrier=self.name,

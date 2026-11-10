@@ -78,6 +78,11 @@ class ScriptedBrain:
     def diagnose(self, report, awb, carrier, order_id, trigger):
         self.calls.append(f"diagnose:{awb}")
         sc = BY_AWB[awb]
+        status = self.read.get_tracking_status(awb, carrier).get("current_status")
+        if status == "delivered" and awb not in self.overrides:
+            return Diagnosis(issue_type="no_issue", severity="low", confidence=0.95,
+                             evidence=["Latest scan: delivered"], recommended_action="close_resolved",
+                             summary_for_human=f"{awb} has been delivered; nothing to do.")
         base = dict(
             issue_type=sc.expected_issue,
             severity=_SEVERITY[sc.expected_issue],

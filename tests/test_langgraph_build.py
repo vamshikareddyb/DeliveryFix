@@ -62,3 +62,31 @@ def test_interrupt_and_resume_approval():
     assert svc.pending_approvals()[0]["proposal"]["kind"] == "reship"
     s = svc.decide(sc.awb, "agent.rao", "agent", approved=True)
     assert s["status"] == "closed" and ctx.backoffice.reshipments
+
+
+def test_monitor_cycle_on_langgraph():
+    from shipment_agent.scheduler import Monitor, register_scenarios
+    from shipment_agent.service import CaseService
+    from shipment_agent.tracking_db import TrackingDB
+
+    ctx, g = make()
+    db = TrackingDB()
+    register_scenarios(db, SCENARIOS)
+    m = Monitor(CaseService(g, ctx, db))
+    assert len(m.run_cycle().started) == 6
+    assert m.run_cycle().started == []
+
+
+def test_sqlite_checkpointer_survives_restart(tmp_path):
+    pytest.importorskip("langgraph.checkpoint.sqlite")
+    from shipment_agent.graph import pending_interrupt, resume_case
+    from shipment_agent.graph.persist import make_checkpointer
+
+    path = str(tmp_path / "cp.db")
+    ctx = ToolContext()
+    g1 = build_graph(ctx, ScriptedBrain(ctx), checkpointer=make_checkpointer(path))
+    sc = BY_AWB["BD2000000003"]
+    start_case(g1, sc.awb, sc.carrier, sc.order_id, "flagged")
+    g2 = build_graph(ctx, ScriptedBrain(ctx), checkpointer=make_checkpointer(path))  # "restart"
+    assert pending_interrupt(g2, sc.awb)["kind"] == "customer_reply"
+    assert resume_case(g2, sc.awb, {"type": "reply", "text": "tomorrow evening"})["status"] == "monitoring"

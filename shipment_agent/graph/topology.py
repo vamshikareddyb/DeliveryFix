@@ -5,6 +5,7 @@ definition in plain Python (tests, and environments without LangGraph).
 
     START -> investigate -> diagnose -> route by recommended_action
       notify_delay -------> schedule_recheck -> END               monitoring
+      (monitor) ----------> schedule_recheck -> END               reattempt already booked
       carrier_inquiry ----> schedule_recheck -> END               monitoring
       ask_reschedule / ask_address -> wait_for_customer  ⏸ (interrupt)
           reply   -> parse_reply -> rebook | update_address -> schedule_recheck -> END
@@ -65,7 +66,8 @@ EDGES = [
 # Conditional edges: source node -> (router method on Nodes, possible targets).
 ROUTES = {
     "diagnose": ("route_after_diagnosis", ["notify_delay", "ask_reschedule", "ask_address", "carrier_inquiry",
-                                           "propose_resolution", "escalate", "close_case"]),
+                                           "propose_resolution", "escalate", "close_case",
+                                           "schedule_recheck"]),
     "wait_for_customer": ("route_after_wait", ["parse_reply", "send_reminder", "handle_no_reply"]),
     "handle_no_reply": ("route_after_no_reply", ["escalate", "schedule_recheck"]),
     "parse_reply": ("route_after_parse", ["rebook", "update_address", "escalate"]),

@@ -36,6 +36,7 @@ ACTION_TO_NODE = {
     "propose_reship": "propose_resolution",
     "escalate": "escalate",
     "close_resolved": "close_case",
+    "monitor": "schedule_recheck",
 }
 
 InterruptFn = Callable[[Any], Any]
@@ -109,9 +110,26 @@ class Nodes:
         history = self.ctx.cases.get(s["shipment_id"])
         final, overrides = apply_guardrails(d, self._order(s), self._tracking(s), history, self.settings)
 
+        # This delivery attempt already went unanswered (question + reminder): don't ask again,
+        # let the carrier's own reattempt run; the recheck limit escalates if nothing changes.
+        attempt = (s.get("tracking") or {}).get("attempt_count", 0)
+        if final.recommended_action in ("ask_reschedule", "ask_address") and s.get("no_reply_attempt") == attempt:
+            overrides.append(f"{final.recommended_action} -> monitor: customer didn't reply about attempt {attempt}")
+            final.recommended_action = "monitor"
+
+        # A reattempt or address change is already in motion: don't ask the customer again.
+        fix = self._fix_in_progress(s)
+        if fix and final.recommended_action in ("ask_reschedule", "ask_address"):
+            if fix["overdue"]:
+                overrides.append(f"{final.recommended_action} -> carrier_inquiry: {fix['what']} but no delivery scan since")
+                final.recommended_action = "carrier_inquiry"
+            else:
+                overrides.append(f"{final.recommended_action} -> monitor: {fix['what']}, waiting for it to happen")
+                final.recommended_action = "monitor"
+
         # Rechecks that keep failing get a human.
         if (s.get("recheck_count", 0) >= self.settings.max_rechecks
-                and final.recommended_action in ("notify_delay", "carrier_inquiry")):
+                and final.recommended_action in ("notify_delay", "carrier_inquiry", "monitor")):
             overrides.append(f"{final.recommended_action} -> escalate: {s['recheck_count']} rechecks without resolution")
             final.recommended_action = "escalate"
 
@@ -123,6 +141,24 @@ class Nodes:
             "log": [f"diagnose: {final.issue_type} ({final.confidence:.2f}) -> {final.recommended_action}"
                     + (f" [overrides: {'; '.join(overrides)}]" if overrides else "")],
         }
+
+    def _fix_in_progress(self, s: CaseState) -> dict | None:
+        """The latest successful rebooking/address update, if no delivery attempt has failed since."""
+        fixes = [a for a in s.get("actions", []) if a.get("ok") and a["action"] in ("request_reattempt", "update_address")]
+        if not fixes:
+            return None
+        fix = fixes[-1]
+        fix_at = datetime.fromisoformat(fix["at"])
+        events = (s.get("tracking") or {}).get("events", [])
+        if any(e["normalized_status"] == "delivery_failed" and datetime.fromisoformat(e["event_time"]) > fix_at
+               for e in events):
+            return None  # it failed again: asking the customer is right
+        now_ist = clock.now().astimezone(IST)
+        if fix["action"] == "request_reattempt":
+            overdue = now_ist.date() > date.fromisoformat(fix["slot_date"])
+            return {"what": f"reattempt booked for {fix['slot_date']}", "overdue": overdue}
+        overdue = clock.now() - fix_at > timedelta(hours=self.settings.delay_recheck_hours * 2)
+        return {"what": "address updated with carrier", "overdue": overdue}
 
     # ------------------------------------------------------------------ automatic actions
     def notify_delay(self, s: CaseState) -> dict:
@@ -144,7 +180,10 @@ class Nodes:
 
     # ------------------------------------------------------------------ asking the customer
     def _ask(self, s: CaseState, kind: str, template_id: str) -> dict:
-        r = self._message(s, template_id, {})
+        # Ask once per delivery attempt: a re-run for the same failure won't repeat the
+        # question, but a second failed attempt (after a rebooking) asks again.
+        attempt = (s.get("tracking") or {}).get("attempt_count", 0)
+        r = self._message(s, template_id, {}, dedupe_key=f"{template_id}:attempt{attempt}")
         o = self._order(s)
         question = TEMPLATES[template_id].format(first_name=o.customer_first_name, order_id=o.order_id)
         return {"actions": [_act(r)], "status": "waiting_customer", "awaiting": kind, "question": question,
@@ -182,10 +221,12 @@ class Nodes:
         # Policy: after the reminder window, let the carrier's own reattempt run its course,
         # but COD orders go to a person (they are the ones most likely to end up RTO).
         o = self._order(s)
+        attempt = (s.get("tracking") or {}).get("attempt_count", 0)
         if o.payment_mode == "cod":
             return {"escalation_reason": "No customer reply after reminder on a COD order (RTO risk).",
-                    "log": ["handle_no_reply: COD -> escalate"]}
-        return {"log": ["handle_no_reply: prepaid -> rely on carrier reattempt, recheck later"]}
+                    "no_reply_attempt": attempt, "log": ["handle_no_reply: COD -> escalate"]}
+        return {"no_reply_attempt": attempt, "awaiting": None,
+                "log": ["handle_no_reply: prepaid -> rely on carrier reattempt, recheck later"]}
 
     def parse_reply(self, s: CaseState) -> dict:
         event = s["customer_event"]
@@ -224,7 +265,7 @@ class Nodes:
     def rebook(self, s: CaseState) -> dict:
         slot = DeliverySlot(**s["parsed_reply"]["slot"])
         r = self.tools.request_rebooking(s["shipment_id"], s["carrier"], slot)
-        update = {"actions": [_act(r)], "last_action_ok": r.ok, "log": [f"rebook: {r.detail}"]}
+        update = {"actions": [_act(r, slot_date=slot.date)], "last_action_ok": r.ok, "log": [f"rebook: {r.detail}"]}
         if r.ok:
             msg = self._message(s, "reattempt_confirmed", {"date": _fmt_date(datetime.fromisoformat(slot.date)),
                                                            "window": slot.window},

@@ -26,6 +26,10 @@ class Settings:
     inquiry_recheck_hours: int = 72
     delay_eta_buffer_days: int = 2  # policy: add 2 days to EDD for surface shipments
 
+    # Scale (Phase 4)
+    llm_runs_per_cycle: int = 200  # new cases + rechecks that may call the LLM in one scheduler cycle
+    reopen_cooldown_hours: int = 48  # a closed case reopens on a new scan, or after this long
+
     # Waiting on people (Phase 3)
     reply_timeout_hours: int = 24      # policy: remind after 24h without a reply
     max_reminders: int = 1             # then fall back (COD -> escalate, prepaid -> carrier reattempt)

@@ -5,11 +5,11 @@ DeliveryFix is an AI agent that catches delivery problems before customers do. I
 
 | Phase | Scope | Status |
 |---|---|---|
-| 0 | Tracking layer: normalized carrier statuses, mock carriers | Mock done (inside Phase 1) |
+| 0 | Tracking layer: normalized carrier statuses, mock carriers, tracking DB | Done (mock carriers) |
 | 1 | LangChain layer: tools, schemas, policy RAG, guardrails, LLM chains | Done |
 | 2 | Core LangGraph flow: investigate → diagnose → route → act, checkpointing | Done |
 | 3 | Waits and humans: customer-reply webhooks, `interrupt()` approvals, timeouts | Done |
-| 4 | Detection and scale: rule-based scanner, case dedupe, retries, rate limits | Planned |
+| 4 | Detection and scale: rule-based scanner, case dedupe, retries, rate limits | Done |
 | 5 | LangSmith: tracing, evaluation dataset, monitoring | Planned |
 
 ## Layout
@@ -23,6 +23,7 @@ shipment_agent/
     base.py         CarrierAdapter interface (swap in Shiprocket/AfterShip later)
     status_map.py   Raw carrier status -> NormalizedStatus; logs unmapped codes
     mock.py         Mock Delhivery / Blue Dart with capabilities and simulated failures
+    resilient.py    Retries with backoff for reads, no blind retries for actions, rate limits
   stores.py         Order store (PII masked for the LLM), case history, refunds/reships/tickets
   messaging.py      Approved templates only, idempotent per case
   policy/
@@ -39,10 +40,16 @@ shipment_agent/
     topology.py     The graph's shape, defined once
     build.py        Compiles the LangGraph StateGraph with a checkpointer
     simulate.py     Same topology in plain Python, including interrupt/resume
-  service.py        Entry points: inbound replies, approvals, timeouts, start/recheck
+    persist.py      Persistent checkpointer (LangGraph SqliteSaver) / thread store (simulator)
+  service.py        Entry points: inbound replies, approvals, timeouts, carrier events, starts
+  tracking_db.py    SQLite: shipments, scan events, case registry
+  ingest.py         Carrier webhooks and polling into the tracking DB
+  detector.py       Rule-based exception flags (no LLM)
+  scheduler.py      Monitor: one cycle = poll, timeouts, detect, start, rechecks
 tests/
 demo.py             Runs the read tools on all scenarios; --llm adds diagnosis
 run_graph.py        Runs every scenario through the case graph
+run_monitor.py      Simulates three days of the monitor: cycles, replies, webhooks, an outage
 ```
 
 ## The case graph
@@ -107,6 +114,43 @@ flowchart TD
   waiting nodes have no side effects before `interrupt()`; questions and reminders
   are sent by the node before, and messaging is idempotent.
 
+**Phase 4: detection and scale**
+
+```mermaid
+flowchart LR
+    W[carrier webhook] --> I[ingest] --> DB[(tracking DB)]
+    P[poll every cycle] --> I
+    DB --> D[detector rules, no LLM] --> F{case already active?}
+    F -->|no, within budget| G[start case: graph]
+    F -->|yes| S[skip]
+    DB --> R[due rechecks / reply timeouts] --> G
+    I -->|delivered / failed / damaged scan| WAKE[wake the case now] --> G
+```
+
+- **The LLM only sees flagged shipments.** `detector.py` applies plain rules to the
+  tracking DB (damaged, failed attempt, unknown status, customs hold, no scan for 48h,
+  past EDD), most urgent first. Healthy and delivered shipments cost nothing.
+- **One active case per shipment.** The `cases` table mirrors every thread's status;
+  a flag for a shipment that already has a case is skipped. A closed case reopens only
+  on a new scan, or after a 48h cooldown in case the first call was wrong.
+- **A budget per cycle** (`llm_runs_per_cycle`). New cases go first by urgency, then
+  due rechecks; anything over budget is picked up next cycle.
+- **Webhooks wake cases immediately.** A delivered scan closes a case that was waiting
+  for a reply or an approval (no refund for a parcel that arrived); a new failed
+  attempt re-asks the customer.
+- **No repeated questions.** A recheck while a booked reattempt is pending just keeps
+  monitoring; if the slot passes with no scan, the agent raises a carrier inquiry. An
+  attempt the customer never answered isn't asked about again; the recheck limit
+  escalates it instead.
+- **Flaky carriers.** Reads retry with exponential backoff and jitter; actions are
+  never retried blindly (a timeout doesn't say whether the carrier acted), so a failed
+  rebooking escalates. Every call passes a per-carrier token bucket.
+- **Failures are isolated.** A case that throws is marked `error` and retried next
+  cycle; the rest of the cycle carries on.
+- **Restarts.** Threads persist via a checkpointer (`make_checkpointer("cases.db")`
+  on LangGraph; `SqliteThreadStore` on the simulator), and the registry lives in the
+  tracking DB, so paused cases resume and nothing is opened twice after a restart.
+
 ## Key decisions
 
 - **Read vs action tools.** Only the five read tools are wrapped as LangChain tools.
@@ -133,6 +177,7 @@ export ANTHROPIC_API_KEY=...
 python demo.py --llm           # investigator + diagnoser + guardrails, prints accuracy
 python run_graph.py            # all scenarios through the graph, then replies, a timeout and an approval
 python run_graph.py --llm      # same with the real LLM
+python run_monitor.py          # three simulated days of the scheduler
 ```
 
 For cases that survive restarts, pass a persistent checkpointer to
