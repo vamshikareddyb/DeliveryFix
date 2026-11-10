@@ -38,6 +38,21 @@ class CaseState(TypedDict, total=False):
     llm_diagnosis: dict          # before guardrails, kept for evaluation
     guardrail_overrides: list[str]
 
+    # Waiting on the customer (Phase 3)
+    awaiting: Optional[str]          # "reschedule" | "address": what we asked for
+    question: Optional[str]          # the message we sent, given to the reply parser
+    reply_deadline: Optional[str]    # ISO time; the scheduler fires a timeout after this
+    reminders_sent: int
+    customer_event: Optional[dict]   # {"type": "reply", "text": ...} or {"type": "timeout"}
+    parsed_reply: Optional[dict]     # CustomerReplyParse
+
+    # Waiting on staff (Phase 3)
+    approval: Optional[dict]         # {"approved", "approver", "role", "note"}
+    approval_error: Optional[str]
+
+    escalation_reason: Optional[str]
+    last_action_ok: Optional[bool]
+
     # Resolution
     proposal: Optional[dict]     # refund / reship awaiting approval
     status: CaseStatus

@@ -7,12 +7,18 @@ ScriptedBrain -> deterministic, no API key; diagnoses from the seed scenarios.
 """
 from __future__ import annotations
 
+import re
+from datetime import timedelta
 from typing import Protocol
+from zoneinfo import ZoneInfo
 
+from .. import clock
 from ..chains import InvestigationReport
 from ..scenarios import BY_AWB
-from ..schemas import Diagnosis
+from ..schemas import Address, CustomerReplyParse, DeliverySlot, Diagnosis, OrderDetails
 from ..tools import ReadTools, ToolContext
+
+IST = ZoneInfo("Asia/Kolkata")
 
 
 class Brain(Protocol):
@@ -20,6 +26,8 @@ class Brain(Protocol):
 
     def diagnose(self, report: InvestigationReport, awb: str, carrier: str, order_id: str,
                  trigger: str) -> Diagnosis: ...
+
+    def parse_reply(self, text: str, question: str, order: OrderDetails) -> CustomerReplyParse: ...
 
 
 class LLMBrain:
@@ -39,6 +47,11 @@ class LLMBrain:
         from ..chains import diagnose
 
         return diagnose(self.llm, report, awb, carrier, order_id, trigger)
+
+    def parse_reply(self, text, question, order):
+        from ..chains import parse_reply
+
+        return parse_reply(self.llm, text, question)
 
 
 _SEVERITY = {"lost": "high", "damaged": "medium", "unclear": "medium", "wrong_address": "medium",
@@ -75,3 +88,48 @@ class ScriptedBrain:
             summary_for_human=f"{sc.description} ({awb}, order {order_id}).",
         )
         return Diagnosis(**{**base, **self.overrides.get(awb, {})})
+
+    # ------------------------------------------------------------------ replies
+    _WEEKDAYS = ["monday", "tuesday", "wednesday", "thursday", "friday", "saturday", "sunday"]
+    _UPSET = ("worst", "useless", "angry", "complaint", "fraud", "cheat", "refund")
+
+    def parse_reply(self, text, question, order):
+        """Small rule-based parser standing in for the LLM in tests and scripted demos."""
+        self.calls.append("parse_reply")
+        t = text.lower()
+        upset = any(w in t for w in self._UPSET)
+
+        if "pickup" in t:
+            return CustomerReplyParse(intent="pickup_point", confidence=0.9, needs_human=upset)
+        if "cancel" in t:
+            return CustomerReplyParse(intent="cancel", confidence=0.9, needs_human=True)
+
+        pin = re.search(r"\b(\d{6})\b", text)
+        if pin:
+            line1 = text[: pin.start()].strip(" ,.-") or text
+            addr = Address(line1=line1, city=order.shipping_address.city,
+                           state=order.shipping_address.state, pincode=pin.group(1))
+            return CustomerReplyParse(intent="new_address", address=addr, confidence=0.85, needs_human=upset)
+
+        today = clock.now().astimezone(IST).date()
+        day = None
+        if "today" in t:
+            day = today
+        elif "tomorrow" in t:
+            day = today + timedelta(days=1)
+        else:
+            m = re.search(r"\b(\d{4}-\d{2}-\d{2})\b", t)
+            if m:
+                from datetime import date
+                day = date.fromisoformat(m.group(1))
+            else:
+                for i, name in enumerate(self._WEEKDAYS):
+                    if name in t:
+                        day = today + timedelta(days=(i - today.weekday()) % 7 or 7)
+                        break
+        if day:
+            window = next((w for w in ("afternoon", "evening", "morning") if w in t), "morning")
+            return CustomerReplyParse(intent="reschedule", slot=DeliverySlot(date=day.isoformat(), window=window),
+                                      confidence=0.9, needs_human=upset)
+
+        return CustomerReplyParse(intent="other", confidence=0.3, needs_human=True)

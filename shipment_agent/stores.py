@@ -53,6 +53,15 @@ class OrderStore:
         r = self._rows[self._by_ref[customer_ref]]
         return r["email"] if channel == "email" else r["phone"]
 
+    def find_by_contact(self, contact: str) -> str | None:
+        """order_id for an inbound phone number or email (phones match on the last 10 digits)."""
+        c = contact.strip().lower()
+        digits = "".join(ch for ch in c if ch.isdigit())[-10:]
+        for r in self._rows.values():
+            if c == r["email"].lower() or (digits and r["phone"][-10:] == digits):
+                return r["order_id"]
+        return None
+
     def update_address(self, order_id: str, address: Address) -> None:
         self._rows[order_id]["shipping_address"] = address.model_dump()
 

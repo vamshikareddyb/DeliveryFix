@@ -1,11 +1,17 @@
 """A tiny in-process runner for the same topology, with no LangGraph dependency.
 
-It mirrors what the compiled graph does for this flow: run nodes in order,
-merge updates (appending for APPEND_KEYS), follow the conditional edge, and
-keep a per-thread state dict between invocations (a stand-in checkpointer).
+It mirrors what the compiled graph does for this flow:
+- runs nodes in order and merges updates (appending for APPEND_KEYS),
+- follows fixed and conditional edges,
+- keeps a per-thread state dict between invocations (stand-in checkpointer),
+- supports interrupt(): a waiting node raises, the run stops with
+  "__interrupt__" in the result, and resume(value) re-runs that node from the
+  top with interrupt() returning `value`, exactly like LangGraph.
 Used by the tests and by run_graph.py when LangGraph isn't installed.
 """
 from __future__ import annotations
+
+from types import SimpleNamespace
 
 from ..config import SETTINGS, Settings
 from ..tools import ToolContext
@@ -14,13 +20,29 @@ from .brain import Brain
 from .nodes import Nodes
 from .state import APPEND_KEYS, CaseState
 
+_MISSING = object()
+
+
+class SimInterrupt(Exception):
+    def __init__(self, value):
+        super().__init__("interrupted")
+        self.value = value
+
 
 class SimulatedGraph:
-    def __init__(self, ctx: ToolContext, brain: Brain, settings: Settings = SETTINGS, max_steps: int = 25):
-        self.nodes = Nodes(ctx, brain, settings)
-        self.threads: dict[str, CaseState] = {}
+    def __init__(self, ctx: ToolContext, brain: Brain, settings: Settings = SETTINGS, max_steps: int = 40):
+        self.nodes = Nodes(ctx, brain, settings, interrupt=self._interrupt)
+        self.threads: dict[str, dict] = {}
         self.max_steps = max_steps
         self._edges = dict(T.EDGES)
+        self._resume_value = _MISSING
+
+    # ---- interrupt plumbing
+    def _interrupt(self, payload):
+        if self._resume_value is not _MISSING:
+            value, self._resume_value = self._resume_value, _MISSING
+            return value
+        raise SimInterrupt(payload)
 
     def _merge(self, state: dict, update: dict) -> None:
         for k, v in update.items():
@@ -29,23 +51,55 @@ class SimulatedGraph:
             else:
                 state[k] = v
 
-    def invoke(self, inp: dict, config: dict) -> CaseState:
-        tid = config["configurable"]["thread_id"]
-        state = self.threads.setdefault(tid, {})
-        self._merge(state, inp)
-        state.setdefault("visited", [])
-        path, node = [], T.ENTRY
+    def _run(self, state: dict, start: str) -> dict:
+        path, node = [], start
+        state.pop("__interrupt__", None)
         for _ in range(self.max_steps):
             path.append(node)
-            self._merge(state, getattr(self.nodes, node)(state))
-            nxt = self.nodes.route_after_diagnosis(state) if node == T.ROUTE_FROM else self._edges[node]
+            try:
+                update = getattr(self.nodes, node)(state)
+            except SimInterrupt as i:
+                state["__pending__"] = node
+                state["__interrupt__"] = [SimpleNamespace(value=i.value)]
+                break
+            self._merge(state, update)
+            if node in T.ROUTES:
+                nxt = getattr(self.nodes, T.ROUTES[node][0])(state)
+            else:
+                nxt = self._edges[node]
             if nxt == "END":
+                state.pop("__pending__", None)
                 break
             node = nxt
         else:
             raise RuntimeError(f"Exceeded {self.max_steps} steps: {path}")
         state["visited"] = path  # path of the latest run (simulator-only field)
         return state
+
+    # ---- public API (same shape as a compiled LangGraph)
+    def invoke(self, inp: dict, config: dict) -> CaseState:
+        state = self.threads.setdefault(config["configurable"]["thread_id"], {})
+        state.pop("__pending__", None)  # a fresh run abandons any pending wait
+        self._merge(state, inp)
+        return self._run(state, T.ENTRY)
+
+    def resume(self, value, config: dict) -> CaseState:
+        state = self.threads[config["configurable"]["thread_id"]]
+        node = state.get("__pending__")
+        if node is None:
+            raise ValueError("Thread is not waiting on an interrupt.")
+        self._resume_value = value
+        try:
+            return self._run(state, node)
+        finally:
+            self._resume_value = _MISSING
+
+    def get_state(self, config: dict):
+        state = self.threads.get(config["configurable"]["thread_id"], {})
+        pending = state.get("__pending__")
+        values = {k: v for k, v in state.items() if not k.startswith("__")}
+        tasks = (SimpleNamespace(interrupts=state.get("__interrupt__", [])),) if pending else ()
+        return SimpleNamespace(values=values, next=(pending,) if pending else (), tasks=tasks)
 
 
 def build_simulated_graph(ctx: ToolContext, brain: Brain, settings: Settings = SETTINGS) -> SimulatedGraph:

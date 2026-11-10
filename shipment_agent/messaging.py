@@ -29,6 +29,22 @@ TEMPLATES: dict[str, str] = {
     "reattempt_confirmed": (
         "Thanks {first_name}! Order {order_id} will be delivered on {date} ({window})."
     ),
+    "reply_reminder": (
+        "Hi {first_name}, a quick reminder: we still need your reply about order {order_id} "
+        "so the courier can complete the delivery."
+    ),
+    "address_updated": (
+        "Thanks {first_name}! We've updated the delivery address for order {order_id}. "
+        "The courier will attempt delivery again shortly."
+    ),
+    "refund_initiated": (
+        "Hi {first_name}, we've started a refund of ₹{amount} for order {order_id}. "
+        "It should reach your original payment method in 5-7 working days."
+    ),
+    "replacement_shipped": (
+        "Hi {first_name}, we're sorry your order {order_id} had a problem in transit. "
+        "We're sending a free replacement and will share tracking details shortly."
+    ),
     "investigating": (
         "Hi {first_name}, we've noticed order {order_id} isn't moving as expected. "
         "We've raised it with the courier and will update you within {hours} hours."

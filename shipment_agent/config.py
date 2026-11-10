@@ -26,5 +26,11 @@ class Settings:
     inquiry_recheck_hours: int = 72
     delay_eta_buffer_days: int = 2  # policy: add 2 days to EDD for surface shipments
 
+    # Waiting on people (Phase 3)
+    reply_timeout_hours: int = 24      # policy: remind after 24h without a reply
+    max_reminders: int = 1             # then fall back (COD -> escalate, prepaid -> carrier reattempt)
+    min_reply_confidence: float = 0.7  # below this a human reads the reply
+    max_slot_days_ahead: int = 7       # reschedule slots further out go to a human
+
 
 SETTINGS = Settings()
